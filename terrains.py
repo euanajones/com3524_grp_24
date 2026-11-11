@@ -1,3 +1,5 @@
+import numpy as np
+
 class Terrain():
     """
     A class to represent a terrain in the fire simulation. Used as a superclass for specific terrain types. 
@@ -57,6 +59,15 @@ class Terrain():
         self.ignition_threshold = 1.0
         self.ignition_probability = 0.0
         self.fuel_resource = 0.0
+
+        self.fuel_map = np.array(500, 500)
+        self.ignite_prob_map = np.array(500, 500)
+
+    def update_fuel_map():
+        pass
+
+    def update_resource():
+        pass
 
     def catches_fire(self):
         """

@@ -14,7 +14,9 @@ sys.path.append(main_dir_loc + 'capyle/guicomponents')
 
 from capyle.ca import Grid2D, Neighbourhood, randomise2d
 import capyle.utils as utils
+import numpy as np
 
+CHAPARRAL, WATER, GRASS, FOREST, TOWN, BURNING, BURNT =  range(7)
 
 def setup(args):
     """Set up the config object used to interact with the GUI"""
@@ -23,7 +25,9 @@ def setup(args):
     # -- THE CA MUST BE RELOADED IN THE GUI IF ANY OF THE BELOW ARE CHANGED --
     config.title = "Modelling a Forest Fire using Cellular Automata"
     config.dimensions = 2
-    config.states = (0, 1, 2)  # 0: unburned, 1: burning, 2: burned
+
+    config.states = (CHAPARRAL, WATER, GRASS, FOREST, TOWN, BURNING, BURNT)
+    gen_map(500, 500)
     # -------------------------------------------------------------------------
 
     # ---- Override the defaults below (these may be changed at anytime) ----
@@ -40,6 +44,19 @@ def setup(args):
         config.save()
         sys.exit()
     return config
+
+def gen_map(rows, cols):
+    map = np.array((rows, cols), CHAPARRAL)
+    map = np.full((rows, cols), CHAPARRAL)
+    map[50:75, 0:250] = FOREST
+    map[75:300, 50:125] = FOREST
+    map[300:350, 50:250] = FOREST
+    map[100:150, 325:450] = FOREST
+    map[125:225, 175:225] = WATER
+    map[275:400, 375:400] = WATER
+    map[225:250, 250:450] = GRASS
+    map[437:462, 187:212] = TOWN
+    return map
 
 
 def transition_function(grid, neighbourstates, neighbourcounts):
