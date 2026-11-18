@@ -15,8 +15,13 @@ sys.path.append(main_dir_loc + 'capyle/guicomponents')
 from capyle.ca import Grid2D, Neighbourhood, randomise2d
 import capyle.utils as utils
 import numpy as np
+import math
 
-CHAPARRAL, WATER, GRASS, FOREST, TOWN, BURNING, BURNT =  range(7)
+WATER, CHAPARRAL, GRASS, FOREST, TOWN, BURNING, BURNT = range(7)
+START_ROW = 0
+START_COL = 0
+BURN_RATE = 0.1 # Explore variable burn rates based on terrain types
+
 
 def setup(args):
     """Set up the config object used to interact with the GUI"""
@@ -26,14 +31,30 @@ def setup(args):
     config.title = "Modelling a Forest Fire using Cellular Automata"
     config.dimensions = 2
 
-    config.states = (CHAPARRAL, WATER, GRASS, FOREST, TOWN, BURNING, BURNT)
-    gen_map(500, 500)
+    config.states = (WATER, CHAPARRAL, GRASS, FOREST, TOWN, BURNING, BURNT)
+    map = gen_map()
+    fire_start = map.copy()
+    fire_start[START_ROW, START_COL] = BURNING
+    config.initial_grid = fire_start
+
+    config.wrap = False
     # -------------------------------------------------------------------------
 
     # ---- Override the defaults below (these may be changed at anytime) ----
 
     # config.state_colors = [(0,0,0),(1,1,1)]
     # config.grid_dims = (200,200)
+
+    config.grid_dims = map.shape
+    config.state_colors = [
+        (0/255, 0/255, 255/255), # Water
+        (101/255, 85/255, 33/255), # Chaparral
+        (124/255, 252/255, 0/255), # Grass
+        (34/255, 139/255, 34/255), # Forest
+        (0/255, 0/255, 0/255), # Town
+        (255/255, 0/255, 0/255), # Burning
+        (50/255, 50/255, 50/255), # Burnt
+    ]
 
     # ----------------------------------------------------------------------
 
@@ -45,9 +66,8 @@ def setup(args):
         sys.exit()
     return config
 
-def gen_map(rows, cols):
-    map = np.array((rows, cols), CHAPARRAL)
-    map = np.full((rows, cols), CHAPARRAL)
+def gen_map():
+    map = np.full((500, 500), CHAPARRAL)
     map[50:75, 0:250] = FOREST
     map[75:300, 50:125] = FOREST
     map[300:350, 50:250] = FOREST
@@ -58,21 +78,44 @@ def gen_map(rows, cols):
     map[437:462, 187:212] = TOWN
     return map
 
+def decamara_function(ignition_prob, fuel, p0=0.56, c1=0.045, c2=0.131, a=0.078, wind_speed=3, wind_angle=0):
+    wind = math.exp(wind_speed * (c1 + c2 * (math.cos(wind_angle) - 1)))
+    # slope = math.exp(a * slope_angle)
+    # return p0 * (1 + ignition_prob) * (1 + fuel) * wind * slope
+    p = p0 * (1 + ignition_prob) * (1 + fuel) * wind
+    return np.clip(p, 0.0, 1.0)
 
-def transition_function(grid, neighbourstates, neighbourcounts):
-    """Function to apply the transition rules
-    and return the new grid"""
-    # YOUR CODE HERE
+def calculate_wind_angle(wind_direction, spread_direction):
+    diff = wind_direction - spread_direction
+    return math.radians(diff)
+
+def transition_function(grid, neighbourstates, neighbourcounts, ignition_prob, fuel):
+    burning_neighbours = neighbourcounts[BURNING]
+    flammable = (grid > WATER) & (grid < TOWN)
+    ignite =  flammable & (burning_neighbours > 0) & (np.random.rand(*grid.shape) < ignition_prob)
+
+    fuel[grid == BURNING] -= BURN_RATE
+    burnt_out = (grid == BURNING) & (fuel <= 0)
+
+    grid[ignite] = BURNING
+    grid[burnt_out] = BURNT
     return grid
-
 
 def main():
     """ Main function that sets up, runs and saves CA"""
     # Get the config object from set up
     config = setup(sys.argv[1:])
+    map = gen_map()
+
+    #                   water chaparral grass forest town
+    IGNITION = np.array([0.0,  0.6,      0.8,  0.2,   0.0])
+    FUEL     = np.array([0.0,  0.6,      0.15, 1.0,   0.0])
+
+    ignition_prob = IGNITION[map].astype(float)
+    fuel = FUEL[map].astype(float)
 
     # Create grid object using parameters from config + transition function
-    grid = Grid2D(config, transition_function)
+    grid = Grid2D(config, (transition_function, ignition_prob, fuel))
 
     # Run the CA, save grid state every generation to timeline
     timeline = grid.run()
