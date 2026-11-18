@@ -17,7 +17,8 @@ import capyle.utils as utils
 import numpy as np
 import math
 
-WATER, CHAPARRAL, GRASS, FOREST, TOWN, BURNING, BURNT = range(7)
+WATER, CHAPARRAL, GRASS, FOREST, CANYON, TOWN, BURNING, BURNT = range(8)
+CANYON_WIDTH = 10
 START_ROW = 0
 START_COL = 0
 BURN_RATE = 0.1 # Explore variable burn rates based on terrain types
@@ -31,7 +32,7 @@ def setup(args):
     config.title = "Modelling a Forest Fire using Cellular Automata"
     config.dimensions = 2
 
-    config.states = (WATER, CHAPARRAL, GRASS, FOREST, TOWN, BURNING, BURNT)
+    config.states = (WATER, CHAPARRAL, GRASS, FOREST, CANYON, TOWN, BURNING, BURNT)
     map = gen_map()
     fire_start = map.copy()
     fire_start[START_ROW, START_COL] = BURNING
@@ -51,6 +52,7 @@ def setup(args):
         (101/255, 85/255, 33/255), # Chaparral
         (124/255, 252/255, 0/255), # Grass
         (34/255, 139/255, 34/255), # Forest
+        (160/255, 110/255, 60/255), # Canyon wall
         (0/255, 0/255, 0/255), # Town
         (255/255, 0/255, 0/255), # Burning
         (50/255, 50/255, 50/255), # Burnt
@@ -74,25 +76,26 @@ def gen_map():
     map[100:150, 325:450] = FOREST
     map[125:225, 175:225] = WATER
     map[275:400, 375:400] = WATER
+
+    map[225 - CANYON_WIDTH:250 + CANYON_WIDTH, 250 - CANYON_WIDTH:450 + CANYON_WIDTH] = CANYON
     map[225:250, 250:450] = GRASS
     map[437:462, 187:212] = TOWN
     return map
 
-def decamara_function(ignition_prob, fuel, p0=0.56, c1=0.045, c2=0.131, a=0.078, wind_speed=3, wind_angle=0):
+def decamara_function(ignition_prob, fuel, slope_angle, p0=0.56, c1=0.045, c2=0.131, a=0.078, wind_speed=3, wind_angle=0):
     wind = math.exp(wind_speed * (c1 + c2 * (math.cos(wind_angle) - 1)))
-    # slope = math.exp(a * slope_angle)
-    # return p0 * (1 + ignition_prob) * (1 + fuel) * wind * slope
-    p = p0 * (1 + ignition_prob) * (1 + fuel) * wind
+    slope = np.exp(a * slope_angle)
+    p = p0 * (1 + ignition_prob) * (1 + fuel) * wind * slope
     return np.clip(p, 0.0, 1.0)
 
 def calculate_wind_angle(wind_direction, spread_direction):
     diff = wind_direction - spread_direction
     return math.radians(diff)
 
-def transition_function(grid, neighbourstates, neighbourcounts, ignition_prob, fuel):
+def transition_function(grid, neighbourstates, neighbourcounts, ignition_prob, fuel, slope_angle):
     burning_neighbours = neighbourcounts[BURNING]
     flammable = (grid > WATER) & (grid < TOWN)
-    ignite =  flammable & (burning_neighbours > 0) & (np.random.rand(*grid.shape) < ignition_prob)
+    ignite =  flammable & (burning_neighbours > 0) & (np.random.rand(*grid.shape) < decamara_function(ignition_prob, fuel, slope_angle))
 
     fuel[grid == BURNING] -= BURN_RATE
     burnt_out = (grid == BURNING) & (fuel <= 0)
@@ -107,15 +110,17 @@ def main():
     config = setup(sys.argv[1:])
     map = gen_map()
 
-    #                   water chaparral grass forest town
-    IGNITION = np.array([0.0,  0.6,      0.8,  0.2,   0.0])
-    FUEL     = np.array([0.0,  0.6,      0.15, 1.0,   0.0])
+    #                   water chaparral grass forest canyon town
+    IGNITION = np.array([0.0,  0.6,      0.8,  0.2,   0.6,   0.0])
+    FUEL     = np.array([0.0,  0.6,      0.15, 1.0,   0.6,   0.0])
+    SLOPE    = np.array([0.0,  0.0,      0.0,  0.0,   70.0,  0.0])
 
     ignition_prob = IGNITION[map].astype(float)
     fuel = FUEL[map].astype(float)
+    slope_angle = SLOPE[map].astype(float)
 
     # Create grid object using parameters from config + transition function
-    grid = Grid2D(config, (transition_function, ignition_prob, fuel))
+    grid = Grid2D(config, (transition_function, ignition_prob, fuel, slope_angle))
 
     # Run the CA, save grid state every generation to timeline
     timeline = grid.run()
