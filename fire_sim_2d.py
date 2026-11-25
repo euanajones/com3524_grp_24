@@ -111,8 +111,8 @@ def main():
     map = gen_map()
 
     #                   water chaparral grass forest canyon town
-    IGNITION = np.array([0.0,  0.6,      0.8,  0.2,   0.6,   0.0])
-    FUEL     = np.array([0.0,  0.6,      0.15, 1.0,   0.6,   0.0])
+    IGNITION = np.array([0.0,  0.06,      0.08,  0.02,   0.06,   0.0])
+    FUEL     = np.array([0.0,  0.06,      0.015, 0.1,   0.06,   0.0])
     SLOPE    = np.array([0.0,  0.0,      0.0,  0.0,   70.0,  0.0])
 
     ignition_prob = IGNITION[map].astype(float)
