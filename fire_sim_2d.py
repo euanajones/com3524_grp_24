@@ -17,14 +17,16 @@ import capyle.utils as utils
 import numpy as np
 import math
 
-WATER, CHAPARRAL, GRASS, FOREST, CANYON, TOWN, BURNING, BURNT = range(8)
+WATER, CHAPARRAL, GRASS, FOREST, CANYON, TOWN, BURNING, BURNT, WATERLOGGED = range(9)
 CANYON_WIDTH = 10
 START_ROW = 0
 START_COL = 0
 BURN_RATE = 0.01 # Explore variable burn rates based on terrain types
+RECOVERY_RATE = 0.004
+REGROWTH_PROBABILITY = 0.001
 
 N, NE, E, SE, S, SW, W, NW = 0, 45, 90, 135, 180, 225, 270, 315
-WIND_DIRECTION = SE
+WIND_DIRECTION = NW
 WIND_SPEED = 3
 
 # Diagonal neighbours are further away (sqrt(2) cells), so they are less likely to ignite
@@ -38,6 +40,43 @@ IGNITION = np.array([0.0,  -0.55,    1.75,  -0.95, -0.55,  0.0])
 FUEL     = np.array([0.0,  0.3,      0.1,   1.5,    0.3,   0.0])
 
 CANYON_DEPTH = 5
+
+# Bodies of water as (row_start, row_end, col_start, col_end) rectangles
+WATER_BODIES = [
+    (125, 225, 175, 225),
+    (275, 400, 375, 400),
+]
+# Each body of water is surrounded by a wall of waterlogged ground this many cells wide
+WATER_BANK_WIDTH = 10
+
+# --- Intervention: water drops ---
+# The 500x500 grid covers 50km x 50km, so each cell is 100m x 100m (0.01 km^2)
+CELL_SIZE_M = 100
+DROP_WIDTH_M = 200                 # every drop is a 100m wide strip (1 cell)
+MAX_DROP_AREA_KM2 = 12.5           # total budget, e.g. one 500m x 25000m line
+DROP_WIDTH_CELLS = DROP_WIDTH_M // CELL_SIZE_M
+MAX_DROP_CELLS = int(round(MAX_DROP_AREA_KM2 * 1e6 / CELL_SIZE_M ** 2))
+
+INITIAL_MOISTURE = 5              # moisture given to a cell when water is dropped on it
+BANK_MOISTURE = INITIAL_MOISTURE     # starting moisture of the waterlogged ground around water
+HEAT_EVAPORATION_RATE = 0.05       # extra moisture lost per burning neighbour (steam)
+
+# Each drop is a 500m wide rectangle:
+#   row, col    - top-left cell of the rectangle
+#   length_m    - length of the strip in metres
+#   orientation - 'H' (runs east-west) or 'V' (runs north-south)
+#   generation  - generation the water is dropped on
+# The total area of all drops must not exceed MAX_DROP_AREA_KM2.
+WATER_DROPS = [
+    dict(row=345, col=0, length_m=5000, orientation='H', generation=0),
+    dict(row=347, col=0, length_m=5000, orientation='H', generation=0),
+    dict(row=75, col=0, length_m=5000, orientation='H', generation=0),
+    dict(row=77, col=0, length_m=5000, orientation='H', generation=0),
+    dict(row=345, col=250, length_m=12500, orientation='H', generation=0),
+    dict(row=347, col=250, length_m=12500, orientation='H', generation=0),
+    dict(row=347, col=400, length_m=10000, orientation='H', generation=0),
+    dict(row=349, col=400, length_m=7500, orientation='H', generation=0)
+]
 
 # Row -1 is up (north), column -1 is left (west).
 # NW N NE
@@ -53,11 +92,14 @@ def setup(args):
     config.title = "Modelling a Forest Fire using Cellular Automata"
     config.dimensions = 2
 
-    config.states = (WATER, CHAPARRAL, GRASS, FOREST, CANYON, TOWN, BURNING, BURNT)
-    map = gen_map()
-    fire_start = map.copy()
+    config.states = (WATER, CHAPARRAL, GRASS, FOREST, CANYON, TOWN, BURNING, BURNT, WATERLOGGED)
+    fire_start = gen_initial_grid(gen_map())
 
-    fire_start[START_ROW:START_ROW + 3, START_COL:START_COL + 3] = BURNING
+    # Apply the waterlogged banks and any drops scheduled for generation 0 so they
+    # appear in the initial grid (the moisture/terrain grids are rebuilt identically in main)
+    validate_water_drops(WATER_DROPS)
+    apply_water_banks(fire_start, np.zeros(fire_start.shape), fire_start.copy())
+    apply_water_drops(fire_start, np.zeros(fire_start.shape), fire_start.copy(), 0)
     config.initial_grid = fire_start
 
     config.wrap = False
@@ -68,7 +110,7 @@ def setup(args):
     # config.state_colors = [(0,0,0),(1,1,1)]
     # config.grid_dims = (200,200)
 
-    config.grid_dims = map.shape
+    config.grid_dims = fire_start.shape
     config.state_colors = [
         (0/255, 0/255, 255/255), # Water
         (101/255, 85/255, 33/255), # Chaparral
@@ -78,6 +120,7 @@ def setup(args):
         (0/255, 0/255, 0/255), # Town
         (255/255, 0/255, 0/255), # Burning
         (50/255, 50/255, 50/255), # Burnt
+        (135/255, 206/255, 250/255), # Waterlogged
     ]
 
     # ----------------------------------------------------------------------
@@ -96,13 +139,78 @@ def gen_map():
     map[75:300, 50:125] = FOREST
     map[300:350, 50:250] = FOREST
     map[100:150, 325:450] = FOREST
-    map[125:225, 175:225] = WATER
-    map[275:400, 375:400] = WATER
+    for r0, r1, c0, c1 in WATER_BODIES:
+        map[r0:r1, c0:c1] = WATER
 
     map[225 - CANYON_WIDTH:250 + CANYON_WIDTH, 250 - CANYON_WIDTH:450 + CANYON_WIDTH] = CANYON
     map[225:250, 250:450] = GRASS
     map[437:462, 187:212] = TOWN
     return map
+
+def gen_initial_grid(map):
+    """Return the map with the starting fire placed on it"""
+    fire_start = map.copy()
+    fire_start[START_ROW:START_ROW + 3, START_COL:START_COL + 3] = BURNING
+    return fire_start
+
+def drop_cells(drop):
+    """Return the (row_start, row_end, col_start, col_end) bounds covered by a drop.
+
+    The end bounds are exclusive.
+    """
+    length_cells = drop['length_m'] // CELL_SIZE_M
+    r, c = drop['row'], drop['col']
+    if drop['orientation'] == 'H':
+        return r, r + DROP_WIDTH_CELLS, c, c + length_cells
+    if drop['orientation'] == 'V':
+        return r, r + length_cells, c, c + DROP_WIDTH_CELLS
+    raise ValueError("Drop orientation must be 'H' or 'V', got %r" % drop['orientation'])
+
+def validate_water_drops(drops):
+    """Check the drops do not exceed the total water budget"""
+    total_cells = sum(DROP_WIDTH_CELLS * (d['length_m'] // CELL_SIZE_M) for d in drops)
+    if total_cells > MAX_DROP_CELLS:
+        raise ValueError("Water drops cover %.2f km^2, the maximum is %.2f km^2"
+                         % (total_cells * CELL_SIZE_M ** 2 / 1e6, MAX_DROP_AREA_KM2))
+
+def apply_water_drops(grid, moisture, terrain, generation):
+    """Waterlog every unburnt vegetation cell under a drop scheduled for this generation.
+
+    The cell's current state is remembered in `terrain` so it can be restored once dry.
+    Water, towns, burning and burnt cells are left unchanged.
+    Cells that are already waterlogged are topped back up to INITIAL_MOISTURE.
+    """
+    for drop in WATER_DROPS:
+        if drop['generation'] != generation:
+            continue
+        r0, r1, c0, c1 = drop_cells(drop)
+        g = grid[r0:r1, c0:c1]
+        wet = moisture[r0:r1, c0:c1]
+        ter = terrain[r0:r1, c0:c1]
+
+        vegetation = (g > WATER) & (g < TOWN)
+        ter[vegetation] = g[vegetation]
+        g[vegetation] = WATERLOGGED
+
+        wet[g == WATERLOGGED] = INITIAL_MOISTURE
+
+def apply_water_banks(grid, moisture, terrain):
+    """Waterlog a WATER_BANK_WIDTH wide wall of ground around every body of water.
+
+    Like a water drop, the cell's original terrain is remembered in `terrain` so it
+    returns to it once dry. Only vegetation is waterlogged (water, towns, burning and
+    burnt cells are left unchanged).
+    """
+    h, w = grid.shape
+    for r0, r1, c0, c1 in WATER_BODIES:
+        rows = slice(max(r0 - WATER_BANK_WIDTH, 0), min(r1 + WATER_BANK_WIDTH, h))
+        cols = slice(max(c0 - WATER_BANK_WIDTH, 0), min(c1 + WATER_BANK_WIDTH, w))
+        g, wet, ter = grid[rows, cols], moisture[rows, cols], terrain[rows, cols]
+
+        vegetation = (g > WATER) & (g < TOWN)
+        ter[vegetation] = g[vegetation]
+        g[vegetation] = WATERLOGGED
+        wet[vegetation] = BANK_MOISTURE
 
 def gen_elevation_map(shape):
     """Return the height of every cell.
@@ -161,7 +269,18 @@ def calculate_wind_angle(wind_direction, spread_direction):
     diff = wind_direction - spread_direction
     return math.radians(diff)
 
-def transition_function(grid, neighbourstates, neighbourcounts, ignition_prob, fuel, slope_angles):
+def transition_function(grid, neighbourstates, neighbourcounts, ignition_prob, fuel, slope_angles,
+                        moisture, terrain, generation):
+    # generation is a 1-element array so the count persists between calls
+    generation[0] += 1
+    apply_water_drops(grid, moisture, terrain, generation[0])
+
+    burning_neighbours = neighbourcounts[BURNING]
+    unburnt = grid < BURNING
+    burning = grid == BURNING
+    burnt = grid == BURNT
+
+    # Waterlogged cells sit outside this range, so they have 0% flammability until dry
     flammable = (grid > WATER) & (grid < TOWN)
 
     not_ignited = np.ones(grid.shape)
@@ -178,6 +297,19 @@ def transition_function(grid, neighbourstates, neighbourcounts, ignition_prob, f
 
     grid[ignite] = BURNING
     grid[burnt_out] = BURNT
+
+    fuel[burnt] += RECOVERY_RATE * 0.6 * np.random.random(np.count_nonzero(burnt))
+    reborn = burnt & (fuel >= 0.6) & (np.random.random(grid.shape) < REGROWTH_PROBABILITY)
+    grid[reborn] = CHAPARRAL
+
+    # Waterlogged cells dry out slowly, and faster next to fire as the water turns to steam.
+    # Once the moisture reaches 0 the cell returns to its original terrain and can burn again.
+    waterlogged = grid == WATERLOGGED
+    moisture[waterlogged] -= HEAT_EVAPORATION_RATE * burning_neighbours[waterlogged] + (0.5 * HEAT_EVAPORATION_RATE * burnt[waterlogged])
+    dried = waterlogged & (moisture <= 0)
+    moisture[dried] = 0
+    grid[dried] = terrain[dried]
+
     return grid
 
 def main():
@@ -191,8 +323,19 @@ def main():
 
     slope_angles = gen_slope_angles(gen_elevation_map(map.shape))
 
+    # Same-sized grids for the intervention: how wet each cell is, and what terrain
+    # it should go back to once dry. Rebuild the banks and generation 0 drops exactly as in setup.
+    validate_water_drops(WATER_DROPS)
+    moisture = np.zeros(map.shape)
+    terrain = map.copy()
+    initial = gen_initial_grid(map)
+    apply_water_banks(initial, moisture, terrain)
+    apply_water_drops(initial, moisture, terrain, 0)
+    generation = np.zeros(1, dtype=int)
+
     # Create grid object using parameters from config + transition function
-    grid = Grid2D(config, (transition_function, ignition_prob, fuel, slope_angles))
+    grid = Grid2D(config, (transition_function, ignition_prob, fuel, slope_angles,
+                           moisture, terrain, generation))
 
     # Run the CA, save grid state every generation to timeline
     timeline = grid.run()
