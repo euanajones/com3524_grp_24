@@ -19,8 +19,15 @@ import math
 
 WATER, CHAPARRAL, GRASS, FOREST, CANYON, TOWN, BURNING, BURNT, WATERLOGGED = range(9)
 CANYON_WIDTH = 10
-START_ROW = 0
-START_COL = 0
+
+# Fire sources from the brief: top-left corner of the 3x3 block of cells set alight at step 0
+POWER_PLANT = (0, 0)      # north-west corner
+INCINERATOR = (0, 497)    # north-east corner
+FIRE_START = POWER_PLANT
+
+# Town as (first row, last row + 1, first col, last col + 1). The town can't burn, so the fire has
+# "reached the town" when any cell touching it is burning.
+TOWN_AREA = (437, 462, 187, 212)
 
 # --- Time scale ---
 # One step = 20 minutes of real time, the same step as Freire & DaCamara (2019) used with 100 m cells.
@@ -170,14 +177,21 @@ def gen_map():
 
     map[225 - CANYON_WIDTH:250 + CANYON_WIDTH, 250 - CANYON_WIDTH:450 + CANYON_WIDTH] = CANYON
     map[225:250, 250:450] = GRASS
-    map[437:462, 187:212] = TOWN
+    r0, r1, c0, c1 = TOWN_AREA
+    map[r0:r1, c0:c1] = TOWN
     return map
 
 def gen_initial_grid(map):
     """Return the map with the starting fire placed on it"""
     fire_start = map.copy()
-    fire_start[START_ROW:START_ROW + 3, START_COL:START_COL + 3] = BURNING
+    row, col = FIRE_START
+    fire_start[row:row + 3, col:col + 3] = BURNING
     return fire_start
+
+def fire_at_town(grid):
+    """True if any cell in the ring around the town is burning"""
+    r0, r1, c0, c1 = TOWN_AREA
+    return (grid[max(r0 - 1, 0):r1 + 1, max(c0 - 1, 0):c1 + 1] == BURNING).any()
 
 def drop_cells(drop):
     """Return the (row_start, row_end, col_start, col_end) bounds covered by a drop.
@@ -304,7 +318,7 @@ def calculate_wind_angle(wind_direction, spread_direction):
     return math.radians(diff)
 
 def transition_function(grid, neighbourstates, neighbourcounts, ignition_prob, burn_time_left, regrowth,
-                        slope_angles, moisture, terrain, generation):
+                        slope_angles, moisture, terrain, generation, town_arrival):
     # generation is a 1-element array so the count persists between calls
     generation[0] += 1
     apply_water_drops(grid, moisture, terrain, generation[0])
@@ -332,6 +346,10 @@ def transition_function(grid, neighbourstates, neighbourcounts, ignition_prob, b
 
     grid[ignite] = BURNING
     grid[burnt_out] = BURNT
+
+    # Record the first step the fire touches the town (0 = not reached yet)
+    if town_arrival[0] == 0 and fire_at_town(grid):
+        town_arrival[0] = generation[0]
 
     # Regrowth: burnt cells slowly build up new vegetation, then may regrow as chaparral
     regrowth[burnt] += RECOVERY_RATE * 0.6 * np.random.random(np.count_nonzero(burnt))
@@ -373,13 +391,23 @@ def main():
     apply_water_banks(initial, moisture, terrain)
     apply_water_drops(initial, moisture, terrain, 0)
     generation = np.zeros(1, dtype=int)
+    town_arrival = np.zeros(1, dtype=int)   # step the fire first touches the town (0 = not yet)
 
     # Create grid object using parameters from config + transition function
     grid = Grid2D(config, (transition_function, ignition_prob, burn_time_left, regrowth, slope_angles,
-                           moisture, terrain, generation))
+                           moisture, terrain, generation, town_arrival))
 
     # Run the CA, save grid state every generation to timeline
     timeline = grid.run()
+
+    # CAPyLE prints this in the terminal once the run finishes
+    source = {POWER_PLANT: "power plant", INCINERATOR: "incinerator"}.get(FIRE_START, str(FIRE_START))
+    if town_arrival[0]:
+        hours = steps_to_hours(town_arrival[0])
+        print(f"Fire from the {source} reached the town at step {town_arrival[0]} "
+              f"({hours:.0f} hours, {hours / 24:.1f} days)")
+    else:
+        print(f"Fire from the {source} did not reach the town within {config.num_generations} steps")
 
     # Save updated config to file
     config.save()
