@@ -17,7 +17,7 @@ import capyle.utils as utils
 import numpy as np
 import math
 
-WATER, CHAPARRAL, GRASS, FOREST, CANYON, TOWN, BURNING, BURNT, WATERLOGGED = range(9)
+WATER, CHAPARRAL, GRASS, FOREST, CANYON, TOWN, BURNING, BURNT, WATERLOGGED, FIREBREAK = range(10)
 CANYON_WIDTH = 10
 
 # Fire sources from the brief: top-left corner of the 3x3 block of cells set alight at step 0
@@ -111,6 +111,15 @@ WATER_DROPS = [
     dict(row=349, col=400, length_m=7500, orientation='H', generation=0)
 ]
 
+# Intervention: forest extension
+# Extra dense forest as (row_start, row_end, col_start, col_end) rectangles. Empty = the original map.
+FOREST_EXTENSIONS = []
+
+# Intervention: firebreaks
+# Unburnable cleared ground as (row_start, row_end, col_start, col_end) rectangles.
+# e.g. ring round the town: [(417, 418, 167, 232), (481, 482, 167, 232), (417, 482, 167, 168), (417, 482, 231, 232)]
+FIREBREAKS = []
+
 # Row -1 is up (north), column -1 is left (west).
 # NW N NE
 # W [X] E
@@ -125,7 +134,7 @@ def setup(args):
     config.title = "Modelling a Forest Fire using Cellular Automata"
     config.dimensions = 2
 
-    config.states = (WATER, CHAPARRAL, GRASS, FOREST, CANYON, TOWN, BURNING, BURNT, WATERLOGGED)
+    config.states = (WATER, CHAPARRAL, GRASS, FOREST, CANYON, TOWN, BURNING, BURNT, WATERLOGGED, FIREBREAK)
     fire_start = gen_initial_grid(gen_map())
 
     # Apply the waterlogged banks and any drops scheduled for generation 0 so they
@@ -154,6 +163,7 @@ def setup(args):
         (255/255, 0/255, 0/255), # Burning
         (50/255, 50/255, 50/255), # Burnt
         (135/255, 206/255, 250/255), # Waterlogged
+        (240/255, 220/255, 170/255), # Firebreak (cleared ground)
     ]
 
     # ----------------------------------------------------------------------
@@ -172,14 +182,26 @@ def gen_map():
     map[75:300, 50:125] = FOREST
     map[300:350, 50:250] = FOREST
     map[100:150, 325:450] = FOREST
+    # Extra forest (lakes are drawn over it)
+    for r0, r1, c0, c1 in FOREST_EXTENSIONS:
+        map[r0:r1, c0:c1] = FOREST
     for r0, r1, c0, c1 in WATER_BODIES:
         map[r0:r1, c0:c1] = WATER
 
     map[225 - CANYON_WIDTH:250 + CANYON_WIDTH, 250 - CANYON_WIDTH:450 + CANYON_WIDTH] = CANYON
     map[225:250, 250:450] = GRASS
+    for r0, r1, c0, c1 in FIREBREAKS:
+        map[r0:r1, c0:c1] = FIREBREAK
     r0, r1, c0, c1 = TOWN_AREA
     map[r0:r1, c0:c1] = TOWN
     return map
+
+def per_cell(table, map):
+    """Per-terrain value (e.g. IGNITION) for every cell; firebreaks get 0."""
+    values = np.zeros(map.shape)
+    terrain = map != FIREBREAK
+    values[terrain] = table[map[terrain]]
+    return values
 
 def gen_initial_grid(map):
     """Return the map with the starting fire placed on it"""
@@ -376,8 +398,8 @@ def main():
     config = setup(sys.argv[1:])
     map = gen_map()
 
-    ignition_prob = IGNITION[map].astype(float)
-    burn_time_left = BURN_STEPS[map].astype(int)   # steps each cell will burn for once alight
+    ignition_prob = per_cell(IGNITION, map)
+    burn_time_left = per_cell(BURN_STEPS, map).astype(int)   # steps each cell will burn for once alight
     regrowth = np.zeros(map.shape)                 # vegetation regrown on burnt cells (regrows at 0.6)
 
     slope_angles = gen_slope_angles(gen_elevation_map(map.shape))
