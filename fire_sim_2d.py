@@ -21,7 +21,13 @@ WATER, CHAPARRAL, GRASS, FOREST, CANYON, TOWN, BURNING, BURNT, WATERLOGGED = ran
 CANYON_WIDTH = 10
 START_ROW = 0
 START_COL = 0
-BURN_RATE = 0.01 # Explore variable burn rates based on terrain types
+
+# --- Time scale ---
+# One step = 20 minutes of real time, the same step as Freire & DaCamara (2019) used with 100 m cells.
+# So 3 steps = 1 hour and 72 steps = 1 day. Use steps_to_hours() to convert results.
+STEP_MINUTES = 20
+STEPS_PER_HOUR = 60 // STEP_MINUTES
+
 RECOVERY_RATE = 0.004
 REGROWTH_PROBABILITY = 0.001
 
@@ -49,8 +55,14 @@ P_DEN    = np.array([0.0,  0.0,      0.0,  0.3,   0.0,   0.0])
 # water 0, chaparral 0.58, grass 0.812, forest 0.302, canyon 0.58, town 0
 IGNITION = P0 * (1 + P_VEG) * (1 + P_DEN)
 
-# Fuel only controls how long a cell burns (FUEL / BURN_RATE steps), NOT how easily it ignites
-FUEL     = np.array([0.0,  0.3,      0.1,   1.5,    0.3,   0.0])
+# How long each terrain burns once alight, from the brief. This does NOT affect how easily it ignites.
+#   grass (canyon scrubland): "several hours" -> 6 h
+#   chaparral:                "several days"  -> 3 days
+#   forest:                   "up to one month" -> 30 days
+#   canyon walls are chaparral-covered, so they burn like chaparral
+#                      water chaparral grass forest   canyon town
+BURN_HOURS = np.array([0,    3 * 24,   6,    30 * 24, 3 * 24, 0])
+BURN_STEPS = BURN_HOURS * STEPS_PER_HOUR   # grass 18, chaparral 216, forest 2160 steps
 
 CANYON_DEPTH = 5
 
@@ -276,18 +288,22 @@ def decamara_function(ignition_prob, slope_angle, c1=0.045, c2=0.131, a=0.078, w
     """Alexandridis et al. (2008) spread probability, as used by Freire & DaCamara (2019):
     p_burn = p0 * (1 + p_veg) * (1 + p_den) * p_wind * p_slope
     ignition_prob is the precomputed p0 * (1 + p_veg) * (1 + p_den) for each cell (see IGNITION).
-    Fuel is NOT used here: it controls how long a cell burns, not how easily it ignites."""
+    Burn time (BURN_STEPS) is NOT used here: it controls how long a cell burns, not how easily it ignites."""
     wind = math.exp(wind_speed * (c1 + c2 * (math.cos(wind_angle) - 1)))
     slope = np.exp(a * slope_angle)
     p = ignition_prob * wind * slope
     return np.clip(p, 0.0, 1.0)
 
+def steps_to_hours(steps):
+    """Convert a number of simulation steps into hours of real time."""
+    return steps / STEPS_PER_HOUR
+
 def calculate_wind_angle(wind_direction, spread_direction):
     diff = wind_direction - spread_direction
     return math.radians(diff)
 
-def transition_function(grid, neighbourstates, neighbourcounts, ignition_prob, fuel, slope_angles,
-                        moisture, terrain, generation):
+def transition_function(grid, neighbourstates, neighbourcounts, ignition_prob, burn_time_left, regrowth,
+                        slope_angles, moisture, terrain, generation):
     # generation is a 1-element array so the count persists between calls
     generation[0] += 1
     apply_water_drops(grid, moisture, terrain, generation[0])
@@ -309,15 +325,21 @@ def transition_function(grid, neighbourstates, neighbourcounts, ignition_prob, f
         not_ignited *= np.where(neighbour == BURNING, 1 - p, 1.0)
     ignite = flammable & (np.random.rand(*grid.shape) < 1 - not_ignited)
 
-    fuel[grid == BURNING] -= BURN_RATE
-    burnt_out = (grid == BURNING) & (fuel <= 0)
+    # Each burning cell counts down its remaining burn time (in steps) and goes out at 0
+    burn_time_left[burning] -= 1
+    burnt_out = burning & (burn_time_left <= 0)
 
     grid[ignite] = BURNING
     grid[burnt_out] = BURNT
 
-    fuel[burnt] += RECOVERY_RATE * 0.6 * np.random.random(np.count_nonzero(burnt))
-    reborn = burnt & (fuel >= 0.6) & (np.random.random(grid.shape) < REGROWTH_PROBABILITY)
+    # Regrowth: burnt cells slowly build up new vegetation, then may regrow as chaparral
+    regrowth[burnt] += RECOVERY_RATE * 0.6 * np.random.random(np.count_nonzero(burnt))
+    reborn = burnt & (regrowth >= 0.6) & (np.random.random(grid.shape) < REGROWTH_PROBABILITY)
     grid[reborn] = CHAPARRAL
+    # A regrown cell behaves like fresh chaparral: chaparral ignition chance and a full burn timer
+    ignition_prob[reborn] = IGNITION[CHAPARRAL]
+    burn_time_left[reborn] = BURN_STEPS[CHAPARRAL]
+    regrowth[reborn] = 0
 
     # Waterlogged cells dry out slowly, and faster next to fire as the water turns to steam.
     # Once the moisture reaches 0 the cell returns to its original terrain and can burn again.
@@ -336,7 +358,8 @@ def main():
     map = gen_map()
 
     ignition_prob = IGNITION[map].astype(float)
-    fuel = FUEL[map].astype(float)
+    burn_time_left = BURN_STEPS[map].astype(int)   # steps each cell will burn for once alight
+    regrowth = np.zeros(map.shape)                 # vegetation regrown on burnt cells (regrows at 0.6)
 
     slope_angles = gen_slope_angles(gen_elevation_map(map.shape))
 
@@ -351,7 +374,7 @@ def main():
     generation = np.zeros(1, dtype=int)
 
     # Create grid object using parameters from config + transition function
-    grid = Grid2D(config, (transition_function, ignition_prob, fuel, slope_angles,
+    grid = Grid2D(config, (transition_function, ignition_prob, burn_time_left, regrowth, slope_angles,
                            moisture, terrain, generation))
 
     # Run the CA, save grid state every generation to timeline
