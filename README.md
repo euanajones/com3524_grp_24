@@ -6,10 +6,11 @@ tests the effect of wind direction, an aerial water drop, extra forest and fireb
 
 ## Team Members
 
-- Euan Jones
 - Ben Lamb
-- James Okolie
+- Euan Jones
 - Harry James
+- James Okolie
+
 
 ## Files
 
