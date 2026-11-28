@@ -39,7 +39,7 @@ RECOVERY_RATE = 0.004
 REGROWTH_PROBABILITY = 0.001
 
 N, NE, E, SE, S, SW, W, NW = 0, 45, 90, 135, 180, 225, 270, 315
-WIND_DIRECTION = NW
+WIND_DIRECTION = SE
 # Wind speed (m/s); 8 m/s is the wind-driven threshold in Freire & DaCamara (2019).
 WIND_SPEED = 8
 
