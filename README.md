@@ -43,17 +43,21 @@ tests the effect of wind direction, an aerial water drop, extra forest and fireb
 
 3. In the tool, choose **File → Open**, then select `ca_descriptions/fire_sim_2d.py`.
 4. Set **Generations** so the fire has time to reach the town:
-   - about **1200** for an incinerator fire;
-   - about **1500** for a power plant fire.
+   - about **1000** is enough with the default settings, from either incinerator or power plant fire
+   - use **1500** if you change the wind to blow away from the town (for example `N` or `NE` with an
+     incinerator fire).
 5. Click **Apply configuration & run CA**, then **Play**. You can also drag the slider to move through
    the steps.
 
 When the run finishes, the model prints how long the fire took to reach the town in the terminal you
-started the tool from. The message appears when you close the tool's window. For example:
+started the tool from. The message appears when you close the tool's window. For example, with the
+default settings:
 
 ```text
-Fire from the incinerator reached the town at step 746 (249 hours, 10.4 days)
+Fire from the power plant reached the town at step 484 (161 hours, 6.7 days)
 ```
+
+The exact step changes a little from run to run, because the fire spreads randomly.
 
 If the fire never reaches the town, it prints `did not reach the town within N steps` instead.
 
